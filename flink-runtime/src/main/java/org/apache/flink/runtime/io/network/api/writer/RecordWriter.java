@@ -68,20 +68,29 @@ public class RecordWriter<T extends IOReadableWritable> {
 
 	private final boolean flushAlways;
 
+	private final boolean isBroadcastSelector;
+
 	private Counter numBytesOut = new SimpleCounter();
 
 	private Counter numBuffersOut = new SimpleCounter();
 
 	public RecordWriter(ResultPartitionWriter writer) {
-		this(writer, new RoundRobinChannelSelector<T>());
+		this(writer, new RoundRobinChannelSelector<T>(), false);
 	}
 
-	@SuppressWarnings("unchecked")
-	public RecordWriter(ResultPartitionWriter writer, ChannelSelector<T> channelSelector) {
-		this(writer, channelSelector, false);
+	public RecordWriter(
+			ResultPartitionWriter writer,
+			ChannelSelector<T> channelSelector,
+			boolean isBroadcastSelector) {
+		this(writer, channelSelector, isBroadcastSelector, false);
 	}
 
-	public RecordWriter(ResultPartitionWriter writer, ChannelSelector<T> channelSelector, boolean flushAlways) {
+	public RecordWriter(
+			ResultPartitionWriter writer,
+			ChannelSelector<T> channelSelector,
+			boolean isBroadcastSelector,
+			boolean flushAlways) {
+		this.isBroadcastSelector = isBroadcastSelector;
 		this.flushAlways = flushAlways;
 		this.targetPartition = writer;
 		this.channelSelector = channelSelector;
@@ -98,7 +107,11 @@ public class RecordWriter<T extends IOReadableWritable> {
 	}
 
 	public void emit(T record) throws IOException, InterruptedException {
-		emit(record, channelSelector.selectChannels(record));
+		if (isBroadcastSelector) {
+			broadcastEmit(record);
+		} else {
+			emit(record, channelSelector.selectChannels(record));
+		}
 	}
 
 	/**
@@ -113,11 +126,7 @@ public class RecordWriter<T extends IOReadableWritable> {
 	 * This is used to send LatencyMarks to a random target channel.
 	 */
 	public void randomEmit(T record) throws IOException, InterruptedException {
-		serializer.serializeRecord(record);
-
-		if (copyFromSerializerToTargetChannel(rng.nextInt(numberOfChannels))) {
-			serializer.prune();
-		}
+		emit(record, rng.nextInt(numberOfChannels));
 	}
 
 	private void emit(T record, int[] targetChannels) throws IOException, InterruptedException {
@@ -132,6 +141,14 @@ public class RecordWriter<T extends IOReadableWritable> {
 
 		// Make sure we don't hold onto the large intermediate serialization buffer for too long
 		if (pruneAfterCopying) {
+			serializer.prune();
+		}
+	}
+
+	private void emit(T record, int targetChannel) throws IOException, InterruptedException {
+		serializer.serializeRecord(record);
+
+		if (copyFromSerializerToTargetChannel(targetChannel)) {
 			serializer.prune();
 		}
 	}
